@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOCTYPE html> teste
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -22,7 +22,7 @@
         const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab'; // Insira sua chave da OpenRouteService aqui
 
         // Obter coordenadas e tempo de entrega do sessionStorage
-        const tempoEntrega = parseInt(sessionStorage.getItem('tempoEntrega'), 10); // Converte para número inteiro
+        const tempoEntrega = parseInt(sessionStorage.getItem('tempoEntrega'), 10);
         const coordenadasDestino = JSON.parse(sessionStorage.getItem('coordenadasDestino'));
 
         // Função para formatar o tempo em horas e minutos
@@ -92,7 +92,7 @@
                     .openPopup();
             }
 
-            // Calcular a rota entre o motorista e o destino
+            // Calcular e atualizar a rota entre o motorista e o destino
             calcularRota(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
         });
     </script>
