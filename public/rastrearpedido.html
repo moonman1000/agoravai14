@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -21,8 +21,7 @@
         const socket = io();
         const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab'; // Insira sua chave da OpenRouteService aqui
 
-        // Obter coordenadas e tempo de entrega do sessionStorage
-        const tempoEntrega = parseInt(sessionStorage.getItem('tempoEntrega'), 10);
+        // Obter coordenadas do destino
         const coordenadasDestino = JSON.parse(sessionStorage.getItem('coordenadasDestino'));
 
         // Função para formatar o tempo em horas e minutos
@@ -35,9 +34,6 @@
                 return `${minutos} minutos`;
             }
         }
-
-        // Mostrar o tempo estimado de entrega formatado
-        document.getElementById('tempoEntrega').innerText = `Tempo estimado para entrega: ${formatarTempo(tempoEntrega)}`;
 
         // Inicializar o mapa
         const map = L.map('map').setView([coordenadasDestino.lat, coordenadasDestino.lon], 13);
@@ -57,14 +53,20 @@
         let marcadorMotorista = null;
         let rota = null;
 
-        // Função para obter a rota mais curta
-        async function calcularRota(latInicio, lonInicio, latFim, lonFim) {
+        // Função para obter a rota e o tempo estimado
+        async function calcularRotaETempo(latInicio, lonInicio, latFim, lonFim) {
             const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${lonInicio},${latInicio}&end=${lonFim},${latFim}`;
-
             const response = await fetch(url);
             const data = await response.json();
-            const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
 
+            // Extrair coordenadas da rota e o tempo estimado
+            const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+            const duracaoMinutos = Math.ceil(data.features[0].properties.segments[0].duration / 60);
+
+            // Atualizar o tempo estimado de entrega
+            document.getElementById('tempoEntrega').innerText = `Tempo estimado para entrega: ${formatarTempo(duracaoMinutos)}`;
+
+            // Atualizar a rota no mapa
             if (rota) {
                 rota.setLatLngs(coordenadasRota);
             } else {
@@ -92,8 +94,8 @@
                     .openPopup();
             }
 
-            // Calcular e atualizar a rota entre o motorista e o destino
-            calcularRota(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
+            // Calcular e atualizar a rota e o tempo estimado de entrega
+            calcularRotaETempo(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
         });
     </script>
 </body>
