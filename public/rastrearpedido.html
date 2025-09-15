@@ -1,22 +1,13 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rastrear Pedido</title>
-    <link
-        rel="stylesheet"
-        href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
-    />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
-        #map {
-            height: 500px;
-            width: 100%;
-        }
-        body {
-            font-family: Arial, sans-serif;
-            padding: 20px;
-        }
+        #map { height: 500px; width: 100%; }
+        body { font-family: Arial, sans-serif; padding: 20px; }
     </style>
 </head>
 <body>
@@ -25,105 +16,87 @@
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-    <!-- <script src="/socket.io/socket.io.js"></script> -->
-
+    <script src="/socket.io/socket.io.js"></script>
     <script>
-        // const socket = io(); // Comente temporariamente para evitar erro se socket.io não estiver disponível
+        const socket = io();
         const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab'; // Insira sua chave da OpenRouteService aqui
 
         // Obter coordenadas do destino
         const coordenadasDestino = JSON.parse(sessionStorage.getItem('coordenadasDestino'));
-        console.log('coordenadasDestino:', coordenadasDestino);
 
-        // Verificar se coordenadasDestino é válido
-        if (!coordenadasDestino || !coordenadasDestino.lat || !coordenadasDestino.lon) {
-            alert('Coordenadas do destino não encontradas. Por favor, defina-as antes de carregar o mapa.');
-        } else {
-            // Função para formatar o tempo em horas e minutos
-            function formatarTempo(tempoMinutos) {
-                const horas = Math.floor(tempoMinutos / 60);
-                const minutos = tempoMinutos % 60;
-                if (horas > 0) {
-                    return `${horas} horas e ${minutos} minutos`;
-                } else {
-                    return `${minutos} minutos`;
-                }
+        // Função para formatar o tempo em horas e minutos
+        function formatarTempo(tempoMinutos) {
+            const horas = Math.floor(tempoMinutos / 60);
+            const minutos = tempoMinutos % 60;
+            if (horas > 0) {
+                return `${horas} horas e ${minutos} minutos`;
+            } else {
+                return `${minutos} minutos`;
             }
-
-            // Inicializar o mapa
-            const map = L.map('map').setView([coordenadasDestino.lat, coordenadasDestino.lon], 13);
-
-            // Adicionar camada do mapa (OpenStreetMap)
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                maxZoom: 19
-            }).addTo(map);
-
-            // Marcar o ponto do destino
-            L.marker([coordenadasDestino.lat, coordenadasDestino.lon])
-                .addTo(map)
-                .bindPopup('Endereço de Entrega')
-                .openPopup();
-
-            // Variáveis para coordenadas e marcador do motorista e rota
-            let coordenadasMotorista = null;
-            let marcadorMotorista = null;
-            let rota = null;
-
-            // Função para obter a rota e o tempo estimado
-            async function calcularRotaETempo(latInicio, lonInicio, latFim, lonFim) {
-                try {
-                    const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${lonInicio},${latInicio}&end=${lonFim},${latFim}`;
-                    const response = await fetch(url);
-                    if (!response.ok) {
-                        throw new Error('Erro na requisição da rota');
-                    }
-                    const data = await response.json();
-
-                    // Extrair coordenadas da rota e o tempo estimado
-                    const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
-                    const duracaoMinutos = Math.ceil(data.features[0].properties.segments[0].duration / 60);
-
-                    // Atualizar o tempo estimado de entrega
-                    document.getElementById('tempoEntrega').innerText = `Tempo estimado para entrega: ${formatarTempo(duracaoMinutos)}`;
-
-                    // Atualizar a rota no mapa
-                    if (rota) {
-                        rota.setLatLngs(coordenadasRota);
-                    } else {
-                        rota = L.polyline(coordenadasRota, {
-                            color: 'blue',
-                            weight: 5,
-                            opacity: 0.7
-                        }).addTo(map);
-                    }
-
-                    // Ajustar o mapa para mostrar a rota
-                    map.fitBounds(rota.getBounds());
-                } catch (error) {
-                    console.error('Erro ao calcular rota:', error);
-                }
-            }
-
-            // Atualizar a localização do motorista em tempo real
-            /*
-            socket.on('atualizacaoLocalizacao', (data) => {
-                coordenadasMotorista = { lat: data.lat, lon: data.lon };
-
-                // Atualizar ou criar o marcador do motorista
-                if (marcadorMotorista) {
-                    marcadorMotorista.setLatLng([coordenadasMotorista.lat, coordenadasMotorista.lon]);
-                } else {
-                    marcadorMotorista = L.marker([coordenadasMotorista.lat, coordenadasMotorista.lon])
-                        .addTo(map)
-                        .bindPopup('Localização do Motorista')
-                        .openPopup();
-                }
-
-                // Calcular e atualizar a rota e o tempo estimado de entrega
-                calcularRotaETempo(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
-            });
-            */
         }
+
+        // Inicializar o mapa
+        const map = L.map('map').setView([coordenadasDestino.lat, coordenadasDestino.lon], 13);
+
+        // Adicionar camada do mapa (OpenStreetMap)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        // Marcar o ponto do destino
+        L.marker([coordenadasDestino.lat, coordenadasDestino.lon]).addTo(map)
+            .bindPopup('Endereço de Entrega')
+            .openPopup();
+
+        // Variáveis para coordenadas e marcador do motorista e rota
+        let coordenadasMotorista = null;
+        let marcadorMotorista = null;
+        let rota = null;
+
+        // Função para obter a rota e o tempo estimado
+        async function calcularRotaETempo(latInicio, lonInicio, latFim, lonFim) {
+            const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${lonInicio},${latInicio}&end=${lonFim},${latFim}`;
+            const response = await fetch(url);
+            const data = await response.json();
+
+            // Extrair coordenadas da rota e o tempo estimado
+            const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+            const duracaoMinutos = Math.ceil(data.features[0].properties.segments[0].duration / 60);
+
+            // Atualizar o tempo estimado de entrega
+            document.getElementById('tempoEntrega').innerText = `Tempo estimado para entrega: ${formatarTempo(duracaoMinutos)}`;
+
+            // Atualizar a rota no mapa
+            if (rota) {
+                rota.setLatLngs(coordenadasRota);
+            } else {
+                rota = L.polyline(coordenadasRota, {
+                    color: 'blue',
+                    weight: 5,
+                    opacity: 0.7
+                }).addTo(map);
+            }
+
+            // Ajustar o mapa para mostrar a rota
+            map.fitBounds(rota.getBounds());
+        }
+
+        // Atualizar a localização do motorista em tempo real
+        socket.on('atualizacaoLocalizacao', (data) => {
+            coordenadasMotorista = { lat: data.lat, lon: data.lon };
+
+            // Atualizar ou criar o marcador do motorista
+            if (marcadorMotorista) {
+                marcadorMotorista.setLatLng([coordenadasMotorista.lat, coordenadasMotorista.lon]);
+            } else {
+                marcadorMotorista = L.marker([coordenadasMotorista.lat, coordenadasMotorista.lon]).addTo(map)
+                    .bindPopup('Localização do Motorista')
+                    .openPopup();
+            }
+
+            // Calcular e atualizar a rota e o tempo estimado de entrega
+            calcularRotaETempo(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
+        });
     </script>
 </body>
 </html>
