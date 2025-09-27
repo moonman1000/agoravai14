@@ -45,8 +45,17 @@
             maxZoom: 19
         }).addTo(map);
 
-        // Marcar o ponto do destino
-        L.marker([coordenadasDestino.lat, coordenadasDestino.lon]).addTo(map)
+        // Criar ícone personalizado para o destino (casa)
+        const destinoIcon = L.icon({
+            iconUrl: 'casa.png',   // caminho da imagem da casa
+            iconSize: [45, 45],    // tamanho da casa
+            iconAnchor: [22, 45],  // base da casa no ponto
+            popupAnchor: [0, -45]  // popup acima da casa
+        });
+
+        // Marcar o ponto do destino com o ícone da casa
+        L.marker([coordenadasDestino.lat, coordenadasDestino.lon], { icon: destinoIcon })
+            .addTo(map)
             .bindPopup('Endereço de Entrega')
             .openPopup();
 
@@ -58,8 +67,8 @@
 
         // Criar ícone personalizado para o motorista
         const motoristaIcon = L.icon({
-            iconUrl: 'wN5QD.png', // Caminho da imagem
-            iconSize: [50, 50],   // ajuste conforme necessário
+            iconUrl: 'wN5QD.png', // Caminho da imagem do carro
+            iconSize: [50, 50],   // ajuste do tamanho
             iconAnchor: [25, 25], // centraliza no ponto
             popupAnchor: [0, -25]
         });
