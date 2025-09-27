@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rastrear Pedido</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        #map { height: 500px; width: 100%; }
+        body { font-family: Arial, sans-serif; padding: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Rastrear Pedido</h1>
+    <p id="tempoEntrega"></p>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <!-- Plugin para rotação -->
+    <script src="https://unpkg.com/leaflet-rotatedmarker/leaflet.rotatedMarker.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab'; // Sua chave ORS
+
+        // Obter coordenadas do destino
+        const coordenadasDestino = JSON.parse(sessionStorage.getItem('coordenadasDestino'));
+
+        // Função para formatar o tempo em horas e minutos
+        function formatarTempo(tempoMinutos) {
+            const horas = Math.floor(tempoMinutos / 60);
+            const minutos = tempoMinutos % 60;
+            if (horas > 0) {
+                return `${horas} horas e ${minutos} minutos`;
+            } else {
+                return `${minutos} minutos`;
+            }
+        }
+
+        // Inicializar o mapa
+        const map = L.map('map').setView([coordenadasDestino.lat, coordenadasDestino.lon], 13);
+
+        // Adicionar camada do mapa (OpenStreetMap)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        // Marcar o ponto do destino
+        L.marker([coordenadasDestino.lat, coordenadasDestino.lon]).addTo(map)
+            .bindPopup('Endereço de Entrega')
+            .openPopup();
+
+        // Variáveis para coordenadas e marcador do motorista e rota
+        let coordenadasMotorista = null;
+        let marcadorMotorista = null;
+        let rota = null;
+        let ultimaPosicao = null;
+
+        // Criar ícone personalizado para o motorista
+        const motoristaIcon = L.icon({
+            iconUrl: 'wN5QD.png', // Caminho da imagem
+            iconSize: [50, 50],   // ajuste conforme necessário
+            iconAnchor: [25, 25], // centraliza no ponto
+            popupAnchor: [0, -25]
+        });
+
+        // Função para calcular ângulo de rotação entre dois pontos
+        function calcularAngulo(lat1, lon1, lat2, lon2) {
+            const rad = Math.PI / 180;
+            const dLon = (lon2 - lon1) * rad;
+            const y = Math.sin(dLon) * Math.cos(lat2 * rad);
+            const x = Math.cos(lat1 * rad) * Math.sin(lat2 * rad) -
+                      Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos(dLon);
+            let ang = Math.atan2(y, x);
+            return (ang * 180 / Math.PI + 360) % 360;
+        }
+
+        // Função para obter a rota e o tempo estimado
+        async function calcularRotaETempo(latInicio, lonInicio, latFim, lonFim) {
+            const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${lonInicio},${latInicio}&end=${lonFim},${latFim}`;
+            const response = await fetch(url);
+            const data = await response.json();
+
+            // Extrair coordenadas e tempo estimado
+            const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+            const duracaoMinutos = Math.ceil(data.features[0].properties.segments[0].duration / 60);
+
+            document.getElementById('tempoEntrega').innerText = 
+                `Tempo estimado para entrega: ${formatarTempo(duracaoMinutos)}`;
+
+            // Atualizar/polyline rota
+            if (rota) {
+                rota.setLatLngs(coordenadasRota);
+            } else {
+                rota = L.polyline(coordenadasRota, { color: 'blue', weight: 5, opacity: 0.7 }).addTo(map);
+            }
+
+            map.fitBounds(rota.getBounds());
+        }
+
+        // Atualizar a localização do motorista em tempo real
+        socket.on('atualizacaoLocalizacao', (data) => {
+            coordenadasMotorista = { lat: data.lat, lon: data.lon };
+
+            if (marcadorMotorista) {
+                // Atualiza posição
+                marcadorMotorista.setLatLng([coordenadasMotorista.lat, coordenadasMotorista.lon]);
+
+                // Calcular rotação se houver posição anterior
+                if (ultimaPosicao) {
+                    const angulo = calcularAngulo(
+                        ultimaPosicao.lat, ultimaPosicao.lon,
+                        coordenadasMotorista.lat, coordenadasMotorista.lon
+                    );
+                    marcadorMotorista.setRotationAngle(angulo);
+                }
+            } else {
+                // Criar marcador com rotação
+                marcadorMotorista = L.marker(
+                    [coordenadasMotorista.lat, coordenadasMotorista.lon],
+                    { icon: motoristaIcon, rotationAngle: 0, rotationOrigin: "center" }
+                ).addTo(map)
+                .bindPopup('Localização do Motorista')
+                .openPopup();
+            }
+
+            ultimaPosicao = { ...coordenadasMotorista };
+
+            calcularRotaETempo(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
+        });
+    </script>
+</body>
+</html>
