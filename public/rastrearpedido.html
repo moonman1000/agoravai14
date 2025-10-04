@@ -8,72 +8,82 @@
     <style>
         #map { height: 500px; width: 100%; }
         body { font-family: Arial, sans-serif; padding: 20px; }
+        #info { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <h1>Rastrear Pedido</h1>
-    <p id="tempoEntrega"></p>
+    <div id="info">
+        <p id="tempoEntrega">Calculando rota...</p>
+        <p id="distancia"></p>
+    </div>
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-    <!-- Plugin para rotação -->
     <script src="https://unpkg.com/leaflet-rotatedmarker/leaflet.rotatedMarker.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
-        const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab'; // Sua chave ORS
+        const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab';
 
-        // Obter coordenadas do destino
         const coordenadasDestino = JSON.parse(sessionStorage.getItem('coordenadasDestino'));
 
-        // Função para formatar o tempo em horas e minutos
-        function formatarTempo(tempoMinutos) {
-            const horas = Math.floor(tempoMinutos / 60);
-            const minutos = tempoMinutos % 60;
-            if (horas > 0) {
-                return `${horas} horas e ${minutos} minutos`;
-            } else {
-                return `${minutos} minutos`;
-            }
-        }
-
-        // Inicializar o mapa
         const map = L.map('map').setView([coordenadasDestino.lat, coordenadasDestino.lon], 13);
-
-        // Adicionar camada do mapa (OpenStreetMap)
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19
         }).addTo(map);
 
-        // Criar ícone personalizado para o destino (casa)
         const destinoIcon = L.icon({
-            iconUrl: 'casa.png',   // caminho da imagem da casa
-            iconSize: [45, 45],    // tamanho da casa
-            iconAnchor: [22, 45],  // base da casa no ponto
-            popupAnchor: [0, -45]  // popup acima da casa
+            iconUrl: 'casa.png',
+            iconSize: [45, 45],
+            iconAnchor: [22, 45],
+            popupAnchor: [0, -45]
         });
 
-        // Marcar o ponto do destino com o ícone da casa
         L.marker([coordenadasDestino.lat, coordenadasDestino.lon], { icon: destinoIcon })
             .addTo(map)
             .bindPopup('Endereço de Entrega')
             .openPopup();
 
-        // Variáveis para coordenadas e marcador do motorista e rota
+        const motoristaIcon = L.icon({
+            iconUrl: 'wN5QD.png',
+            iconSize: [50, 50],
+            iconAnchor: [25, 25],
+            popupAnchor: [0, -25]
+        });
+
         let coordenadasMotorista = null;
         let marcadorMotorista = null;
         let rota = null;
         let ultimaPosicao = null;
+        let ultimaRotaCalculada = null;
+        let animacaoAtiva = null;
 
-        // Criar ícone personalizado para o motorista
-        const motoristaIcon = L.icon({
-            iconUrl: 'wN5QD.png', // Caminho da imagem do carro
-            iconSize: [50, 50],   // ajuste do tamanho
-            iconAnchor: [25, 25], // centraliza no ponto
-            popupAnchor: [0, -25]
-        });
+        // Calcular distância
+        function calcularDistancia(lat1, lon1, lat2, lon2) {
+            const R = 6371e3;
+            const φ1 = lat1 * Math.PI / 180;
+            const φ2 = lat2 * Math.PI / 180;
+            const Δφ = (lat2 - lat1) * Math.PI / 180;
+            const Δλ = (lon2 - lon1) * Math.PI / 180;
 
-        // Função para calcular ângulo de rotação entre dois pontos
+            const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return R * c;
+        }
+
+        function formatarTempo(tempoMinutos) {
+            const horas = Math.floor(tempoMinutos / 60);
+            const minutos = Math.round(tempoMinutos % 60);
+            if (horas > 0) {
+                return `${horas}h ${minutos}min`;
+            }
+            return `${minutos} min`;
+        }
+
         function calcularAngulo(lat1, lon1, lat2, lon2) {
             const rad = Math.PI / 180;
             const dLon = (lon2 - lon1) * rad;
@@ -84,58 +94,116 @@
             return (ang * 180 / Math.PI + 360) % 360;
         }
 
-        // Função para obter a rota e o tempo estimado
-        async function calcularRotaETempo(latInicio, lonInicio, latFim, lonFim) {
-            const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${lonInicio},${latInicio}&end=${lonFim},${latFim}`;
-            const response = await fetch(url);
-            const data = await response.json();
+        // Interpolação suave entre posições
+        function interpolarPosicao(inicio, fim, duracao = 1000) {
+            if (animacaoAtiva) clearInterval(animacaoAtiva);
 
-            // Extrair coordenadas e tempo estimado
-            const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
-            const duracaoMinutos = Math.ceil(data.features[0].properties.segments[0].duration / 60);
+            const passos = 30;
+            const intervalo = duracao / passos;
+            let passo = 0;
 
-            document.getElementById('tempoEntrega').innerText = 
-                `Tempo estimado para entrega: ${formatarTempo(duracaoMinutos)}`;
+            animacaoAtiva = setInterval(() => {
+                passo++;
+                const progresso = passo / passos;
+                
+                const latAtual = inicio.lat + (fim.lat - inicio.lat) * progresso;
+                const lonAtual = inicio.lon + (fim.lon - inicio.lon) * progresso;
 
-            // Atualizar/polyline rota
-            if (rota) {
-                rota.setLatLngs(coordenadasRota);
-            } else {
-                rota = L.polyline(coordenadasRota, { color: 'blue', weight: 5, opacity: 0.7 }).addTo(map);
-            }
+                if (marcadorMotorista) {
+                    marcadorMotorista.setLatLng([latAtual, lonAtual]);
+                }
 
-            map.fitBounds(rota.getBounds());
+                if (passo >= passos) {
+                    clearInterval(animacaoAtiva);
+                    animacaoAtiva = null;
+                }
+            }, intervalo);
         }
 
-        // Atualizar a localização do motorista em tempo real
+        // Calcular rota com throttling
+        async function calcularRotaETempo(latInicio, lonInicio, latFim, lonFim) {
+            // Só recalcular se moveu mais de 50 metros
+            if (ultimaRotaCalculada) {
+                const distancia = calcularDistancia(
+                    ultimaRotaCalculada.lat, 
+                    ultimaRotaCalculada.lon,
+                    latInicio, 
+                    lonInicio
+                );
+                if (distancia < 50) return; // Não recalcular
+            }
+
+            try {
+                const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${lonInicio},${latInicio}&end=${lonFim},${latFim}`;
+                const response = await fetch(url);
+                const data = await response.json();
+
+                const coordenadasRota = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                const duracaoMinutos = data.features[0].properties.segments[0].duration / 60;
+                const distanciaKm = (data.features[0].properties.segments[0].distance / 1000).toFixed(1);
+
+                document.getElementById('tempoEntrega').innerText = 
+                    `⏱️ Tempo estimado: ${formatarTempo(duracaoMinutos)}`;
+                document.getElementById('distancia').innerText = 
+                    `📍 Distância: ${distanciaKm} km`;
+
+                if (rota) {
+                    rota.setLatLngs(coordenadasRota);
+                } else {
+                    rota = L.polyline(coordenadasRota, { 
+                        color: '#2196F3', 
+                        weight: 5, 
+                        opacity: 0.7 
+                    }).addTo(map);
+                }
+
+                ultimaRotaCalculada = { lat: latInicio, lon: lonInicio };
+
+            } catch (error) {
+                console.error('Erro ao calcular rota:', error);
+            }
+        }
+
+        // Atualizar localização do motorista
         socket.on('atualizacaoLocalizacao', (data) => {
-            coordenadasMotorista = { lat: data.lat, lon: data.lon };
+            const novaPosicao = { lat: data.lat, lon: data.lon };
 
             if (marcadorMotorista) {
-                // Atualiza posição
-                marcadorMotorista.setLatLng([coordenadasMotorista.lat, coordenadasMotorista.lon]);
+                // Interpolar movimento suave
+                const posicaoAtual = marcadorMotorista.getLatLng();
+                interpolarPosicao(
+                    { lat: posicaoAtual.lat, lon: posicaoAtual.lng },
+                    novaPosicao,
+                    1500
+                );
 
-                // Calcular rotação se houver posição anterior
+                // Calcular rotação
                 if (ultimaPosicao) {
                     const angulo = calcularAngulo(
                         ultimaPosicao.lat, ultimaPosicao.lon,
-                        coordenadasMotorista.lat, coordenadasMotorista.lon
+                        novaPosicao.lat, novaPosicao.lon
                     );
                     marcadorMotorista.setRotationAngle(angulo);
                 }
             } else {
-                // Criar marcador com rotação
                 marcadorMotorista = L.marker(
-                    [coordenadasMotorista.lat, coordenadasMotorista.lon],
+                    [novaPosicao.lat, novaPosicao.lon],
                     { icon: motoristaIcon, rotationAngle: 0, rotationOrigin: "center" }
                 ).addTo(map)
-                .bindPopup('Localização do Motorista')
+                .bindPopup('Motorista')
                 .openPopup();
             }
 
-            ultimaPosicao = { ...coordenadasMotorista };
+            ultimaPosicao = { ...novaPosicao };
+            coordenadasMotorista = novaPosicao;
 
-            calcularRotaETempo(coordenadasMotorista.lat, coordenadasMotorista.lon, coordenadasDestino.lat, coordenadasDestino.lon);
+            // Recalcular rota (com throttling interno)
+            calcularRotaETempo(
+                novaPosicao.lat, 
+                novaPosicao.lon, 
+                coordenadasDestino.lat, 
+                coordenadasDestino.lon
+            );
         });
     </script>
 </body>
