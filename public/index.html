@@ -4,48 +4,440 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Preencher Endereço de Entrega</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
-        body { font-family: Arial, sans-serif; padding: 20px; }
-        label { display: block; margin-bottom: 10px; }
-        input[type="text"] { width: 100%; padding: 10px; margin-bottom: 20px; }
-        button { padding: 10px 20px; background-color: #4285f4; color: white; border: none; cursor: pointer; }
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            max-width: 500px;
+            width: 100%;
+        }
+        
+        h1 { 
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 24px;
+            text-align: center;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+            position: relative;
+        }
+        
+        label { 
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        input[type="text"] { 
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 15px;
+            transition: all 0.3s;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        input[type="text"].error {
+            border-color: #f44336;
+        }
+        
+        input[type="text"].success {
+            border-color: #4caf50;
+        }
+        
+        .suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+        
+        .suggestion-item {
+            padding: 12px 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .suggestion-item:hover {
+            background: #f5f5f5;
+        }
+        
+        .suggestion-item:last-child {
+            border-bottom: none;
+        }
+        
+        button { 
+            width: 100%;
+            padding: 14px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .status-message {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .status-message.error {
+            background: #ffebee;
+            color: #c62828;
+            display: block;
+        }
+        
+        .status-message.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            display: block;
+        }
+        
+        .status-message.info {
+            background: #e3f2fd;
+            color: #1565c0;
+            display: block;
+        }
+        
+        #miniMap {
+            height: 200px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+            border: 2px solid #e0e0e0;
+        }
+        
+        .icon {
+            margin-right: 8px;
+        }
     </style>
 </head>
 <body>
-    <h1>Preencha seu Endereço de Entrega</h1>
-    <form id="enderecoForm">
-        <label for="endereco">Endereço de Entrega:</label>
-        <input type="text" id="endereco" name="endereco" placeholder="Digite seu endereço completo" required>
-        <button type="submit">Enviar Endereço</button>
-    </form>
+    <div class="container">
+        <h1>📍 Endereço de Entrega</h1>
+        
+        <form id="enderecoForm">
+            <div class="form-group">
+                <label for="endereco">
+                    <span class="icon">🏠</span>Digite seu endereço completo:
+                </label>
+                <input 
+                    type="text" 
+                    id="endereco" 
+                    name="endereco" 
+                    placeholder="Ex: Rua das Flores, 123, São Paulo - SP"
+                    autocomplete="off"
+                    required
+                >
+                <div id="suggestions" class="suggestions"></div>
+            </div>
+            
+            <button type="submit" id="submitBtn">
+                <span id="btnText">Confirmar Endereço</span>
+            </button>
+        </form>
+        
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 10px; color: #666;">Processando endereço...</p>
+        </div>
+        
+        <div id="statusMessage" class="status-message"></div>
+        
+        <div id="miniMap"></div>
+    </div>
 
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
+        const enderecoInput = document.getElementById('endereco');
+        const suggestionsDiv = document.getElementById('suggestions');
+        const form = document.getElementById('enderecoForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const statusMessage = document.getElementById('statusMessage');
+        const miniMapDiv = document.getElementById('miniMap');
+        
+        let miniMap = null;
+        let miniMarker = null;
+        let debounceTimer = null;
+        let coordenadasSelecionadas = null;
 
-        document.getElementById('enderecoForm').addEventListener('submit', function(e) {
+        // API Key do OpenRouteService (use a sua)
+        const apiKey = '5b3ce3597851110001cf6248461ce4f521b24420bbc67527fa68a8ab';
+
+        // Função para buscar sugestões de endereços (Geocoding)
+        async function buscarSugestoes(query) {
+            if (query.length < 3) {
+                suggestionsDiv.style.display = 'none';
+                return;
+            }
+
+            try {
+                // Usando Nominatim (OpenStreetMap) - gratuito e sem limite
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=br&limit=5&addressdetails=1`;
+                
+                const response = await fetch(url, {
+                    headers: {
+                        'User-Agent': 'DeliveryApp/1.0' // Nominatim requer User-Agent
+                    }
+                });
+                const data = await response.json();
+
+                if (data.length > 0) {
+                    mostrarSugestoes(data);
+                } else {
+                    suggestionsDiv.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Erro ao buscar sugestões:', error);
+            }
+        }
+
+        // Mostrar sugestões na tela
+        function mostrarSugestoes(sugestoes) {
+            suggestionsDiv.innerHTML = '';
+            
+            sugestoes.forEach(sugestao => {
+                const div = document.createElement('div');
+                div.className = 'suggestion-item';
+                div.textContent = sugestao.display_name;
+                
+                div.addEventListener('click', () => {
+                    enderecoInput.value = sugestao.display_name;
+                    coordenadasSelecionadas = {
+                        lat: parseFloat(sugestao.lat),
+                        lon: parseFloat(sugestao.lon)
+                    };
+                    suggestionsDiv.style.display = 'none';
+                    enderecoInput.classList.add('success');
+                    mostrarNoMiniMapa(coordenadasSelecionadas);
+                });
+                
+                suggestionsDiv.appendChild(div);
+            });
+            
+            suggestionsDiv.style.display = 'block';
+        }
+
+        // Debounce para evitar muitas requisições
+        enderecoInput.addEventListener('input', (e) => {
+            clearTimeout(debounceTimer);
+            enderecoInput.classList.remove('error', 'success');
+            
+            debounceTimer = setTimeout(() => {
+                buscarSugestoes(e.target.value);
+            }, 300);
+        });
+
+        // Fechar sugestões ao clicar fora
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.form-group')) {
+                suggestionsDiv.style.display = 'none';
+            }
+        });
+
+        // Mostrar endereço no mini mapa
+        function mostrarNoMiniMapa(coords) {
+            miniMapDiv.style.display = 'block';
+            
+            if (!miniMap) {
+                miniMap = L.map('miniMap').setView([coords.lat, coords.lon], 15);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19
+                }).addTo(miniMap);
+            } else {
+                miniMap.setView([coords.lat, coords.lon], 15);
+            }
+
+            if (miniMarker) {
+                miniMarker.setLatLng([coords.lat, coords.lon]);
+            } else {
+                miniMarker = L.marker([coords.lat, coords.lon]).addTo(miniMap)
+                    .bindPopup('📍 Seu endereço')
+                    .openPopup();
+            }
+        }
+
+        // Geocodificar endereço (caso não tenha selecionado sugestão)
+        async function geocodificarEndereco(endereco) {
+            try {
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(endereco)}&countrycodes=br&limit=1`;
+                
+                const response = await fetch(url, {
+                    headers: {
+                        'User-Agent': 'DeliveryApp/1.0'
+                    }
+                });
+                const data = await response.json();
+
+                if (data.length > 0) {
+                    return {
+                        lat: parseFloat(data[0].lat),
+                        lon: parseFloat(data[0].lon)
+                    };
+                } else {
+                    throw new Error('Endereço não encontrado');
+                }
+            } catch (error) {
+                throw error;
+            }
+        }
+
+        // Mostrar mensagem de status
+        function mostrarStatus(mensagem, tipo) {
+            statusMessage.textContent = mensagem;
+            statusMessage.className = `status-message ${tipo}`;
+        }
+
+        // Submeter formulário
+        form.addEventListener('submit', async function(e) {
             e.preventDefault();
 
-            const endereco = document.getElementById('endereco').value;
+            const endereco = enderecoInput.value.trim();
+            
+            if (!endereco) {
+                enderecoInput.classList.add('error');
+                mostrarStatus('❌ Por favor, preencha o endereço', 'error');
+                return;
+            }
 
-            // Enviar o endereço para o servidor para obter as coordenadas e a rota
-            socket.emit('obterCoordenadas', endereco);
+            // Desabilitar botão e mostrar loading
+            submitBtn.disabled = true;
+            loading.style.display = 'block';
+            statusMessage.style.display = 'none';
 
-            // Ouvir a resposta do servidor com o tempo estimado e as coordenadas do destino
-            socket.on('dadosEntrega', function(dados) {
-                if (dados.tempoEstimado && dados.coordenadas) {
-                    // Armazenar as coordenadas e o tempo estimado no sessionStorage
-                    sessionStorage.setItem('tempoEntrega', dados.tempoEstimado);
-                    sessionStorage.setItem('coordenadasDestino', JSON.stringify(dados.coordenadas));
-
-                    // Redirecionar para a página de rastreamento com as coordenadas
-                    window.location.href = `/rastrearpedido.html?lat=${dados.coordenadas.lat}&lon=${dados.coordenadas.lon}`;
-                } else {
-                    alert('Erro ao processar o endereço. Por favor, tente novamente.');
+            try {
+                // Se não selecionou sugestão, geocodificar
+                if (!coordenadasSelecionadas) {
+                    mostrarStatus('🔍 Buscando endereço...', 'info');
+                    coordenadasSelecionadas = await geocodificarEndereco(endereco);
                 }
-            });
+
+                // Enviar para o servidor
+                socket.emit('obterCoordenadas', {
+                    endereco: endereco,
+                    coordenadas: coordenadasSelecionadas
+                });
+
+                // Aguardar resposta do servidor
+                socket.once('dadosEntrega', function(dados) {
+                    loading.style.display = 'none';
+                    
+                    if (dados.tempoEstimado && dados.coordenadas) {
+                        mostrarStatus('✅ Endereço confirmado! Redirecionando...', 'success');
+                        
+                        // Armazenar dados
+                        sessionStorage.setItem('tempoEntrega', dados.tempoEstimado);
+                        sessionStorage.setItem('coordenadasDestino', JSON.stringify(dados.coordenadas));
+                        sessionStorage.setItem('enderecoEntrega', endereco);
+
+                        // Redirecionar após 1 segundo
+                        setTimeout(() => {
+                            window.location.href = `/rastrearpedido.html?lat=${dados.coordenadas.lat}&lon=${dados.coordenadas.lon}`;
+                        }, 1000);
+                    } else {
+                        throw new Error('Dados inválidos recebidos do servidor');
+                    }
+                });
+
+                // Timeout de 10 segundos
+                setTimeout(() => {
+                    if (submitBtn.disabled) {
+                        loading.style.display = 'none';
+                        submitBtn.disabled = false;
+                        mostrarStatus('⏱️ Tempo esgotado. Tente novamente.', 'error');
+                    }
+                }, 10000);
+
+            } catch (error) {
+                console.error('Erro:', error);
+                loading.style.display = 'none';
+                submitBtn.disabled = false;
+                enderecoInput.classList.add('error');
+                mostrarStatus('❌ Erro ao processar endereço. Verifique e tente novamente.', 'error');
+            }
+        });
+
+        // Validação em tempo real
+        enderecoInput.addEventListener('blur', () => {
+            if (enderecoInput.value.trim().length < 10) {
+                enderecoInput.classList.add('error');
+                mostrarStatus('⚠️ Digite um endereço completo', 'error');
+            }
         });
     </script>
 </body>
 </html>
-
