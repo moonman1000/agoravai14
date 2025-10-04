@@ -8,10 +8,12 @@
     <style>
         #map { height: 500px; width: 100%; }
         body { font-family: Arial, sans-serif; padding: 20px; }
+        #status { padding: 10px; background: #e8f5e9; border-radius: 5px; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <h1>Localização do Motorista</h1>
+    <div id="status">Aguardando GPS...</div>
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
@@ -19,34 +21,110 @@
     <script>
         const socket = io();
 
-        // Inicializar o mapa
-        const map = L.map('map').setView([0, 0], 13);  // Começar o mapa sem localização definida
+        // Filtro de Kalman para suavizar GPS
+        class FiltroGPS {
+            constructor(processNoise = 0.01, measurementNoise = 4) {
+                this.Q = processNoise;
+                this.R = measurementNoise;
+                this.P = 1;
+                this.X = null;
+                this.K = 0;
+            }
 
-        // Adicionar camada do mapa (OpenStreetMap)
+            filtrar(lat, lon) {
+                if (this.X === null) {
+                    this.X = { lat, lon };
+                    return this.X;
+                }
+
+                this.P = this.P + this.Q;
+                this.K = this.P / (this.P + this.R);
+                this.X.lat = this.X.lat + this.K * (lat - this.X.lat);
+                this.X.lon = this.X.lon + this.K * (lon - this.X.lon);
+                this.P = (1 - this.K) * this.P;
+
+                return { ...this.X };
+            }
+        }
+
+        const filtroGPS = new FiltroGPS();
+        let ultimaPosicaoEnviada = null;
+        let marker = null;
+
+        const map = L.map('map').setView([0, 0], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19
         }).addTo(map);
 
-        // Função para obter a localização do motorista
+        // Calcular distância entre dois pontos (em metros)
+        function calcularDistancia(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; // Raio da Terra em metros
+            const φ1 = lat1 * Math.PI / 180;
+            const φ2 = lat2 * Math.PI / 180;
+            const Δφ = (lat2 - lat1) * Math.PI / 180;
+            const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+            const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return R * c;
+        }
+
         function updateLocation(position) {
             const lat = position.coords.latitude;
             const lon = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
 
-            // Atualizar o mapa para a localização atual
-            map.setView([lat, lon], 13);
-            const marker = L.marker([lat, lon]).addTo(map)
-                .bindPopup('Você está aqui')
-                .openPopup();
+            // Aplicar filtro de Kalman
+            const posicaoFiltrada = filtroGPS.filtrar(lat, lon);
 
-            // Enviar a localização atual para o servidor
-            socket.emit('localizacaoMotorista', { lat, lon });
+            // Atualizar mapa
+            map.setView([posicaoFiltrada.lat, posicaoFiltrada.lon], 16);
+            
+            if (marker) {
+                marker.setLatLng([posicaoFiltrada.lat, posicaoFiltrada.lon]);
+            } else {
+                marker = L.marker([posicaoFiltrada.lat, posicaoFiltrada.lon]).addTo(map)
+                    .bindPopup('Você está aqui')
+                    .openPopup();
+            }
+
+            // Enviar apenas se moveu mais de 10 metros (reduz tráfego)
+            const deveEnviar = !ultimaPosicaoEnviada || 
+                calcularDistancia(
+                    ultimaPosicaoEnviada.lat, 
+                    ultimaPosicaoEnviada.lon,
+                    posicaoFiltrada.lat, 
+                    posicaoFiltrada.lon
+                ) > 10;
+
+            if (deveEnviar) {
+                socket.emit('localizacaoMotorista', {
+                    lat: posicaoFiltrada.lat,
+                    lon: posicaoFiltrada.lon,
+                    accuracy: accuracy,
+                    timestamp: Date.now()
+                });
+                ultimaPosicaoEnviada = posicaoFiltrada;
+                document.getElementById('status').innerText = 
+                    `GPS ativo | Precisão: ${Math.round(accuracy)}m`;
+            }
         }
 
-        // Usar a geolocalização do navegador para obter a posição atual do motorista
         if (navigator.geolocation) {
-            navigator.geolocation.watchPosition(updateLocation, function(error) {
-                console.error('Erro ao obter a localização:', error);
-            });
+            navigator.geolocation.watchPosition(updateLocation, 
+                (error) => {
+                    console.error('Erro GPS:', error);
+                    document.getElementById('status').innerText = 'Erro ao obter GPS';
+                },
+                {
+                    enableHighAccuracy: true,
+                    maximumAge: 0,
+                    timeout: 5000
+                }
+            );
         } else {
             alert('Seu navegador não suporta geolocalização.');
         }
