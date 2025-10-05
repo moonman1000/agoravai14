@@ -6,22 +6,223 @@
     <title>Localização do Motorista</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
-        #map { height: 500px; width: 100%; }
-        body { font-family: Arial, sans-serif; padding: 20px; }
-        #status { padding: 10px; background: #e8f5e9; border-radius: 5px; margin-bottom: 10px; }
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 0;
+            margin: 0;
+            background: #f5f5f5;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .status-bar {
+            background: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.active {
+            background: #4caf50;
+        }
+
+        .status-dot.inactive {
+            background: #f44336;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        #map { 
+            height: calc(100vh - 160px);
+            width: 100%;
+        }
+
+        .info-panel {
+            position: absolute;
+            top: 80px;
+            right: 10px;
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            min-width: 200px;
+        }
+
+        .info-panel h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            color: #333;
+        }
+
+        .info-item {
+            margin: 8px 0;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .info-item strong {
+            color: #333;
+        }
+
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 9999;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        .connection-status.connected {
+            background: #4caf50;
+            color: white;
+        }
+
+        .connection-status.disconnected {
+            background: #f44336;
+            color: white;
+        }
+
+        .alert {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ff9800;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            z-index: 9999;
+            display: none;
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translateX(-50%) translateY(100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(-50%) translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .alert.show {
+            display: block;
+        }
     </style>
 </head>
 <body>
-    <h1>Localização do Motorista</h1>
-    <div id="status">Aguardando GPS...</div>
+    <div class="connection-status disconnected" id="connectionStatus">
+        🔴 Desconectado
+    </div>
+
+    <div class="header">
+        <h1>🚗 Painel do Motorista</h1>
+    </div>
+
+    <div class="status-bar">
+        <div class="status-item">
+            <div class="status-dot inactive" id="gpsStatus"></div>
+            <span id="gpsText">GPS: Aguardando...</span>
+        </div>
+        <div class="status-item">
+            <div class="status-dot inactive" id="serverStatus"></div>
+            <span id="serverText">Servidor: Desconectado</span>
+        </div>
+    </div>
+
     <div id="map"></div>
+
+    <div class="info-panel" id="infoPanel" style="display: none;">
+        <h3>📊 Informações</h3>
+        <div class="info-item">
+            <strong>Latitude:</strong> <span id="infoLat">-</span>
+        </div>
+        <div class="info-item">
+            <strong>Longitude:</strong> <span id="infoLon">-</span>
+        </div>
+        <div class="info-item">
+            <strong>Precisão:</strong> <span id="infoAccuracy">-</span>
+        </div>
+        <div class="info-item">
+            <strong>Última atualização:</strong> <span id="infoTime">-</span>
+        </div>
+        <div class="info-item">
+            <strong>Enviados:</strong> <span id="infoSent">0</span>
+        </div>
+    </div>
+
+    <div class="alert" id="alert"></div>
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
+        // ==================== CONFIGURAÇÃO ====================
+        console.log('🚗 Iniciando painel do motorista...');
 
-        // Filtro de Kalman para suavizar GPS
+        const socket = io({
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 10,
+            timeout: 10000
+        });
+
+        // ==================== ELEMENTOS DOM ====================
+        const connectionStatus = document.getElementById('connectionStatus');
+        const gpsStatus = document.getElementById('gpsStatus');
+        const gpsText = document.getElementById('gpsText');
+        const serverStatus = document.getElementById('serverStatus');
+        const serverText = document.getElementById('serverText');
+        const infoPanel = document.getElementById('infoPanel');
+        const alertDiv = document.getElementById('alert');
+
+        let marker = null;
+        let circle = null;
+        let ultimaPosicaoEnviada = null;
+        let totalEnviados = 0;
+        let watchId = null;
+
+        // ==================== FILTRO DE KALMAN ====================
         class FiltroGPS {
             constructor(processNoise = 0.01, measurementNoise = 4) {
                 this.Q = processNoise;
@@ -48,17 +249,18 @@
         }
 
         const filtroGPS = new FiltroGPS();
-        let ultimaPosicaoEnviada = null;
-        let marker = null;
 
-        const map = L.map('map').setView([0, 0], 13);
+        // ==================== MAPA ====================
+        const map = L.map('map').setView([-30.0346, -51.2177], 13);
+        
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
         }).addTo(map);
 
-        // Calcular distância entre dois pontos (em metros)
+        // ==================== FUNÇÕES AUXILIARES ====================
         function calcularDistancia(lat1, lon1, lat2, lon2) {
-            const R = 6371e3; // Raio da Terra em metros
+            const R = 6371e3;
             const φ1 = lat1 * Math.PI / 180;
             const φ2 = lat2 * Math.PI / 180;
             const Δφ = (lat2 - lat1) * Math.PI / 180;
@@ -72,10 +274,59 @@
             return R * c;
         }
 
+        function mostrarAlerta(mensagem, duracao = 3000) {
+            alertDiv.textContent = mensagem;
+            alertDiv.classList.add('show');
+            setTimeout(() => {
+                alertDiv.classList.remove('show');
+            }, duracao);
+        }
+
+        function atualizarInfo(lat, lon, accuracy) {
+            document.getElementById('infoLat').textContent = lat.toFixed(6);
+            document.getElementById('infoLon').textContent = lon.toFixed(6);
+            document.getElementById('infoAccuracy').textContent = `${Math.round(accuracy)}m`;
+            document.getElementById('infoTime').textContent = new Date().toLocaleTimeString('pt-BR');
+            document.getElementById('infoSent').textContent = totalEnviados;
+            infoPanel.style.display = 'block';
+        }
+
+        // ==================== SOCKET.IO ====================
+        socket.on('connect', () => {
+            console.log('✅ Conectado ao servidor! Socket ID:', socket.id);
+            connectionStatus.textContent = '🟢 Conectado';
+            connectionStatus.className = 'connection-status connected';
+            serverStatus.className = 'status-dot active';
+            serverText.textContent = 'Servidor: Conectado';
+            mostrarAlerta('✅ Conectado ao servidor');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('❌ Desconectado do servidor');
+            connectionStatus.textContent = '🔴 Desconectado';
+            connectionStatus.className = 'connection-status disconnected';
+            serverStatus.className = 'status-dot inactive';
+            serverText.textContent = 'Servidor: Desconectado';
+            mostrarAlerta('❌ Desconectado do servidor');
+        });
+
+        socket.on('connect_error', (error) => {
+            console.error('❌ Erro de conexão:', error);
+            mostrarAlerta('⚠️ Erro de conexão com servidor');
+        });
+
+        // ==================== GEOLOCALIZAÇÃO ====================
         function updateLocation(position) {
             const lat = position.coords.latitude;
             const lon = position.coords.longitude;
             const accuracy = position.coords.accuracy;
+            const timestamp = position.timestamp;
+
+            console.log(`📍 GPS recebido: [${lat.toFixed(6)}, ${lon.toFixed(6)}] | Precisão: ${Math.round(accuracy)}m`);
+
+            // Atualizar status GPS
+            gpsStatus.className = 'status-dot active';
+            gpsText.textContent = `GPS: Ativo (±${Math.round(accuracy)}m)`;
 
             // Aplicar filtro de Kalman
             const posicaoFiltrada = filtroGPS.filtrar(lat, lon);
@@ -86,12 +337,38 @@
             if (marker) {
                 marker.setLatLng([posicaoFiltrada.lat, posicaoFiltrada.lon]);
             } else {
-                marker = L.marker([posicaoFiltrada.lat, posicaoFiltrada.lon]).addTo(map)
-                    .bindPopup('Você está aqui')
+                const carIcon = L.icon({
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                });
+
+                marker = L.marker([posicaoFiltrada.lat, posicaoFiltrada.lon], { icon: carIcon })
+                    .addTo(map)
+                    .bindPopup('🚗 Você está aqui')
                     .openPopup();
             }
 
-            // Enviar apenas se moveu mais de 10 metros (reduz tráfego)
+            // Círculo de precisão
+            if (circle) {
+                circle.setLatLng([posicaoFiltrada.lat, posicaoFiltrada.lon]);
+                circle.setRadius(accuracy);
+            } else {
+                circle = L.circle([posicaoFiltrada.lat, posicaoFiltrada.lon], {
+                    color: '#2196F3',
+                    fillColor: '#2196F3',
+                    fillOpacity: 0.1,
+                    radius: accuracy
+                }).addTo(map);
+            }
+
+            // Atualizar painel de informações
+            atualizarInfo(posicaoFiltrada.lat, posicaoFiltrada.lon, accuracy);
+
+            // Enviar apenas se moveu mais de 10 metros
             const deveEnviar = !ultimaPosicaoEnviada || 
                 calcularDistancia(
                     ultimaPosicaoEnviada.lat, 
@@ -100,34 +377,89 @@
                     posicaoFiltrada.lon
                 ) > 10;
 
-            if (deveEnviar) {
-                socket.emit('localizacaoMotorista', {
+            if (deveEnviar && socket.connected) {
+                const dados = {
                     lat: posicaoFiltrada.lat,
                     lon: posicaoFiltrada.lon,
                     accuracy: accuracy,
                     timestamp: Date.now()
-                });
+                };
+
+                console.log('📤 Enviando localização para servidor:', dados);
+                socket.emit('localizacaoMotorista', dados);
+                
                 ultimaPosicaoEnviada = posicaoFiltrada;
-                document.getElementById('status').innerText = 
-                    `GPS ativo | Precisão: ${Math.round(accuracy)}m`;
+                totalEnviados++;
+                
+                mostrarAlerta(`📡 Localização enviada (#${totalEnviados})`, 2000);
+            } else if (!socket.connected) {
+                console.warn('⚠️ Socket desconectado, não enviando localização');
+            } else {
+                console.log('ℹ️ Movimento < 10m, não enviando');
             }
         }
 
+        function handleGPSError(error) {
+            console.error('❌ Erro GPS:', error);
+            gpsStatus.className = 'status-dot inactive';
+            
+            let mensagem = '';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    mensagem = '❌ Permissão de localização negada';
+                    gpsText.textContent = 'GPS: Permissão negada';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    mensagem = '❌ Localização indisponível';
+                    gpsText.textContent = 'GPS: Indisponível';
+                    break;
+                case error.TIMEOUT:
+                    mensagem = '⏱️ Timeout ao obter localização';
+                    gpsText.textContent = 'GPS: Timeout';
+                    break;
+                default:
+                    mensagem = '❌ Erro desconhecido no GPS';
+                    gpsText.textContent = 'GPS: Erro';
+            }
+            
+            mostrarAlerta(mensagem, 5000);
+        }
+
+        // ==================== INICIAR GEOLOCALIZAÇÃO ====================
         if (navigator.geolocation) {
-            navigator.geolocation.watchPosition(updateLocation, 
-                (error) => {
-                    console.error('Erro GPS:', error);
-                    document.getElementById('status').innerText = 'Erro ao obter GPS';
-                },
+            console.log('🔍 Solicitando permissão de localização...');
+            
+            mostrarAlerta('📍 Solicitando acesso à localização...', 3000);
+
+            watchId = navigator.geolocation.watchPosition(
+                updateLocation,
+                handleGPSError,
                 {
                     enableHighAccuracy: true,
                     maximumAge: 0,
-                    timeout: 5000
+                    timeout: 10000
                 }
             );
+
+            console.log('✅ Monitoramento GPS iniciado. Watch ID:', watchId);
         } else {
-            alert('Seu navegador não suporta geolocalização.');
+            console.error('❌ Geolocalização não suportada');
+            gpsText.textContent = 'GPS: Não suportado';
+            mostrarAlerta('❌ Seu navegador não suporta geolocalização', 5000);
         }
+
+        // ==================== LIMPEZA ====================
+        window.addEventListener('beforeunload', () => {
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+                console.log('🛑 Monitoramento GPS parado');
+            }
+            socket.disconnect();
+        });
+
+        // ==================== DEBUG ====================
+        console.log('✅ Painel do motorista carregado');
+        console.log('📱 Aguardando GPS...');
     </script>
 </body>
 </html>
