@@ -1,0 +1,38 @@
+{
+  "id": "/",
+  "name": "Rastreamento em Tempo Real",
+  "short_name": "Rastreamento",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0ea5e9",
+  "icons": [
+    {
+      "src": "/icons/icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Rastrear Pedido",
+      "short_name": "Rastrear",
+      "url": "/rastrearpedido.html"
+    },
+    {
+      "name": "App Motorista",
+      "short_name": "Motorista",
+      "url": "/motorista.html"
+    }
+  ]
+}
