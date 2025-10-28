@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Consulta de Entrega</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0ea5e9" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; padding: 16px; background: #f8fafc; color: #0f172a; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 760px; margin: 0 auto 24px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    label { font-size: 14px; font-weight: 600; color: #334155; }
+    input, button { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #cbd5e1; font-size: 16px; }
+    button { background: #0ea5e9; color: #fff; border: none; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #status { font-size: 14px; color: #334155; margin-top: 8px; }
+    #map { height: 300px; border-radius: 12px; margin-top: 12px; }
+    .muted { color: #64748b; font-size: 13px; }
+    .eta { font-weight: 700; }
+    .link { color: #0ea5e9; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Consultar entrega e tempo estimado</h2>
+    <div class="row">
+      <div>
+        <label for="orderId">ID do pedido</label>
+        <input id="orderId" placeholder="Ex: PED-12345" />
+      </div>
+      <div>
+        <label for="address">Seu endereço</label>
+        <input id="address" placeholder="Rua, número, cidade" list="addrList" autocomplete="off" />
+        <datalist id="addrList"></datalist>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <button id="btnConsultar">Consultar</button>
+    </div>
+    <div id="status"></div>
+    <div id="map"></div>
+    <p class="muted" id="resultado"></p>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const addr = $('address');
+    const list = $('addrList');
+    const statusEl = $('status');
+    const resultEl = $('resultado');
+    const btn = $('btnConsultar');
+    const orderInput = $('orderId');
+
+    let debounceTimer;
+
+    // Mapa minivisualização
+    let map, marker;
+    function ensureMap() {
+      if (map) return;
+      map = L.map('map', { zoomControl: true }).setView([-23.5505, -46.6333], 12);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+    }
+
+    async function geocode(q) {
+      const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&limit=5`);
+      if (!r.ok) throw new Error('Falha no geocoding');
+      return r.json();
+    }
+
+    addr.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      const q = addr.value.trim();
+      if (q.length < 3) return;
+      debounceTimer = setTimeout(async () => {
+        try {
+          const results = await geocode(q);
+          list.innerHTML = results.map(r => `<option value="${r.display_name}"></option>`).join('');
+        } catch (e) {}
+      }, 300);
+    });
+
+    btn.addEventListener('click', async () => {
+      const orderId = orderInput.value.trim();
+      const q = addr.value.trim();
+      if (!orderId || !q) {
+        statusEl.textContent = 'Preencha o ID do pedido e o endereço.';
+        return;
+      }
+      btn.disabled = true;
+      statusEl.textContent = 'Buscando endereço e posição do motorista...';
+      resultEl.textContent = '';
+
+      try {
+        const [gc, driverRes] = await Promise.all([
+          geocode(q),
+          fetch(`/api/driver/latest/${encodeURIComponent(orderId)}`).then(r => r.json())
+        ]);
+
+        if (!gc.length) throw new Error('Endereço não encontrado.');
+        const dest = { lat: gc[0].lat, lng: gc[0].lng };
+        ensureMap();
+        if (!marker) marker = L.marker([dest.lat, dest.lng]).addTo(map);
+        marker.setLatLng([dest.lat, dest.lng]);
+        map.setView([dest.lat, dest.lng], 15);
+
+        const latest = driverRes.location;
+        if (!latest) {
+          statusEl.textContent = 'Endereço encontrado. Ainda não há posição do motorista.';
+          resultEl.innerHTML = `Você poderá acompanhar em <a class="link" href="/rastrearpedido.html?orderId=${encodeURIComponent(orderId)}&dest=${dest.lat},${dest.lng}">rastrearpedido.html</a>`;
+          return;
+        }
+
+        const routeRes = await fetch(`/api/route?start=${latest.lat},${latest.lng}&end=${dest.lat},${dest.lng}&profile=driving-car`);
+        if (!routeRes.ok) throw new Error('Falha ao calcular rota');
+        const route = await routeRes.json();
+
+        const minutes = Math.round(route.duration / 60);
+        statusEl.textContent = 'Estimativa calculada com sucesso.';
+        resultEl.innerHTML = `Distância: ${(route.distance / 1000).toFixed(1)} km | ETA: <span class="eta">${minutes} min</span>. 
+          Acompanhe em <a class="link" href="/rastrearpedido.html?orderId=${encodeURIComponent(orderId)}&dest=${dest.lat},${dest.lng}">tempo real</a>.`;
+      } catch (e) {
+        statusEl.textContent = e.message || 'Erro ao consultar.';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
