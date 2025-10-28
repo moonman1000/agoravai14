@@ -9,7 +9,7 @@ const axios = require('axios');
 const cors = require('cors');
 const compression = require('compression');
 const helmet = require('helmet');
-const LRU = require('lru-cache');
+const { LRUCache } = require('lru-cache'); // Atualizado para lru-cache v10+
 const { Server } = require('socket.io');
 
 const app = express();
@@ -21,13 +21,23 @@ const ORS_API_KEY = process.env.ORS_API_KEY || '';
 const NOMINATIM_EMAIL = process.env.NOMINATIM_EMAIL || 'contact@example.com';
 
 // Segurança e performance
-app.use(helmet({ contentSecurityPolicy: false })); // CSP off para facilitar dev/socket; ajuste depois se quiser CSP
+app.use(
+  helmet({
+    contentSecurityPolicy: false // Facilita dev com WebSocket; ajuste CSP depois se necessário
+  })
+);
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 
 // CORS
 if (ALLOWED_ORIGIN && ALLOWED_ORIGIN !== '*') {
-  app.use(cors({ origin: ALLOWED_ORIGIN, methods: ['GET', 'POST'], credentials: false }));
+  app.use(
+    cors({
+      origin: ALLOWED_ORIGIN,
+      methods: ['GET', 'POST'],
+      credentials: false
+    })
+  );
 } else {
   app.use(cors());
 }
@@ -35,7 +45,7 @@ if (ALLOWED_ORIGIN && ALLOWED_ORIGIN !== '*') {
 // Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: ALLOWED_ORIGIN !== '*' ? ALLOWED_ORIGIN : true,
+    origin: ALLOWED_ORIGIN === '*' ? '*' : ALLOWED_ORIGIN,
     methods: ['GET', 'POST'],
     credentials: false
   },
@@ -45,13 +55,21 @@ const io = new Server(server, {
 });
 
 // Pastas estáticas
-const staticDir = fs.existsSync(path.join(__dirname, 'public')) ? path.join(__dirname, 'public') : __dirname;
-app.use(express.static(staticDir, { maxAge: '1h', index: false }));
+const staticDir = fs.existsSync(path.join(__dirname, 'public'))
+  ? path.join(__dirname, 'public')
+  : __dirname;
+
+app.use(
+  express.static(staticDir, {
+    maxAge: '1h',
+    index: false
+  })
+);
 
 // Mapas em memória
 const latestLocationByOrderId = new Map(); // orderId -> { lat, lng, speed, heading, ts }
-const routeCache = new LRU({ max: 500, ttl: 1000 * 60 * 15 }); // 15 min
-const geocodeCache = new LRU({ max: 1000, ttl: 1000 * 60 * 60 * 24 }); // 24h
+const routeCache = new LRUCache({ max: 500, ttl: 1000 * 60 * 15 }); // 15 min
+const geocodeCache = new LRUCache({ max: 1000, ttl: 1000 * 60 * 60 * 24 }); // 24 h
 
 // Utils
 function isFiniteNumber(n) {
@@ -70,12 +88,8 @@ function parseLatLngParam(val) {
   const [a, b] = val.split(',').map((s) => parseFloat(s.trim()));
   if (!isFiniteNumber(a) || !isFiniteNumber(b)) return null;
 
-  // Se a está no range de lat e b no range de lng, interpretamos como lat,lng
   if (validLat(a) && validLng(b)) return { lat: a, lng: b };
-
-  // Se a parece lng e b parece lat, interpretamos invertido
   if (validLng(a) && validLat(b)) return { lat: b, lng: a };
-
   return null;
 }
 function normalizeOrderId(id) {
@@ -86,7 +100,9 @@ function normalizeOrderId(id) {
 // Rotas (ORS com fallback OSRM)
 async function getRouteORS(start, end, profile = 'driving-car') {
   if (!ORS_API_KEY) throw new Error('ORS_API_KEY ausente');
-  const url = `https://api.openrouteservice.org/v2/directions/${encodeURIComponent(profile)}/geojson?api_key=${encodeURIComponent(ORS_API_KEY)}`;
+  const url = `https://api.openrouteservice.org/v2/directions/${encodeURIComponent(
+    profile
+  )}/geojson?api_key=${encodeURIComponent(ORS_API_KEY)}`;
   const body = {
     coordinates: [
       [start.lng, start.lat],
@@ -100,13 +116,15 @@ async function getRouteORS(start, end, profile = 'driving-car') {
   const summary = feat.properties && feat.properties.summary;
   const distance = summary?.distance || 0;
   const duration = summary?.duration || 0;
-  // geojson coords vêm como [lng, lat]; converter para [lat, lng]
+  // GeoJSON coords vêm como [lng, lat]; converter para [lat, lng]
   const latlngs = coords.map(([lng, lat]) => [lat, lng]);
   return { coordinates: latlngs, distance, duration, source: 'ors' };
 }
 
 async function getRouteOSRM(start, end, profile = 'driving') {
-  const url = `https://router.project-osrm.org/route/v1/${encodeURIComponent(profile)}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&steps=false`;
+  const url = `https://router.project-osrm.org/route/v1/${encodeURIComponent(
+    profile
+  )}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&steps=false`;
   const { data } = await axios.get(url, { timeout: 12000 });
   if (!data || !data.routes || !data.routes[0]) throw new Error('Resposta OSRM inválida');
   const route = data.routes[0];
@@ -118,7 +136,9 @@ async function getRouteOSRM(start, end, profile = 'driving') {
 }
 
 async function computeRoute(start, end, profile = 'driving-car') {
-  const key = `${profile}|${start.lat.toFixed(6)},${start.lng.toFixed(6)}|${end.lat.toFixed(6)},${end.lng.toFixed(6)}`;
+  const key = `${profile}|${start.lat.toFixed(6)},${start.lng.toFixed(
+    6
+  )}|${end.lat.toFixed(6)},${end.lng.toFixed(6)}`;
   const cached = routeCache.get(key);
   if (cached) return cached;
 
@@ -134,7 +154,7 @@ async function computeRoute(start, end, profile = 'driving-car') {
   }
 }
 
-// Geocoding (proxy leve p/ Nominatim, com cache)
+// Geocoding (proxy leve para Nominatim, com cache)
 async function geocodeQuery(query, limit = 5) {
   const q = String(query || '').trim();
   if (!q) return [];
@@ -218,8 +238,17 @@ app.get('/api/route', async (req, res) => {
     const start = parseLatLngParam(startParam);
     const end = parseLatLngParam(endParam);
 
-    if (!start || !end || !validLat(start.lat) || !validLng(start.lng) || !validLat(end.lat) || !validLng(end.lng)) {
-      return res.status(400).json({ error: 'Parâmetros start/end inválidos. Use "lat,lng" ou "lng,lat".' });
+    if (
+      !start ||
+      !end ||
+      !validLat(start.lat) ||
+      !validLng(start.lng) ||
+      !validLat(end.lat) ||
+      !validLng(end.lng)
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'Parâmetros start/end inválidos. Use "lat,lng" ou "lng,lat".' });
     }
 
     const route = await computeRoute(start, end, profile);
