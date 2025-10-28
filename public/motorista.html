@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>App Motorista</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0ea5e9" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    body { margin: 0; font-family: system-ui, Arial, sans-serif; background: #f8fafc; color: #0f172a; }
+    header { padding: 12px 16px; background: #0ea5e9; color: #fff; }
+    .panel { padding: 12px 16px; background: #fff; display: grid; gap: 8px; border-bottom: 1px solid #e2e8f0; }
+    .row { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 8px; }
+    input, button { padding: 10px; border-radius: 10px; border: 1px solid #cbd5e1; font-size: 15px; }
+    button { background: #0ea5e9; color: #fff; border: none; cursor: pointer; }
+    #map { height: calc(100vh - 160px); }
+    .muted { color: #64748b; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header><h2>App do Motorista</h2></header>
+  <div class="panel">
+    <div class="row">
+      <input id="orderId" placeholder="ID do pedido (ex: PED-12345)" />
+      <button id="btnStart">Iniciar</button>
+      <button id="btnStop">Parar</button>
+      <button id="btnSim">Simular</button>
+    </div>
+    <div class="muted" id="status">Aguardando...</div>
+  </div>
+  <div id="map"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const btnStart = $('btnStart');
+    const btnStop  = $('btnStop');
+    const btnSim   = $('btnSim');
+    const orderIn  = $('orderId');
+    const statusEl = $('status');
+
+    let map = L.map('map').setView([-23.5505, -46.6333], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    let socket = io();
+    let watchId = null;
+    let driverMarker = null;
+    let last = null; // {lat,lng,ts}
+    let simTimer = null;
+    const MIN_MOVE_METERS = 10; // só emite se mover +10m ou 3s
+    const MAX_INTERVAL_MS = 3000;
+
+    socket.on('connect', () => setStatus('Socket conectado'));
+    socket.on('disconnect', () => setStatus('Socket desconectado'));
+    socket.on('joined_room', ({ orderId }) => setStatus(`Na sala ${orderId}`));
+    socket.on('error_event', (e) => setStatus(`Erro: ${e?.message || 'desconhecido'}`));
+
+    function setStatus(t) { statusEl.textContent = t; }
+
+    function setMarker(lat, lng) {
+      if (!driverMarker) driverMarker = L.marker([lat, lng]).addTo(map);
+      driverMarker.setLatLng([lat, lng]);
+    }
+
+    function haversine(a, b) {
+      const R = 6371000;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLng = (b.lng - a.lng) * Math.PI / 180;
+      const lat1 = a.lat * Math.PI / 180;
+      const lat2 = b.lat * Math.PI / 180;
+      const x = Math.sin(dLat/2)**2 + Math.sin(dLng/2)**2 * Math.cos(lat1) * Math.cos(lat2);
+      return 2 * R * Math.asin(Math.sqrt(x));
+    }
+    function bearing(a, b) {
+      const φ1 = a.lat * Math.PI / 180, φ2 = b.lat * Math.PI / 180;
+      const λ1 = a.lng * Math.PI / 180, λ2 = b.lng * Math.PI / 180;
+      const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+      const x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1);
+      const θ = Math.atan2(y, x);
+      let deg = (θ * 180 / Math.PI + 360) % 360;
+      return deg;
+    }
+
+    // Kalman simples 1D; aplica em lat e lng separadamente
+    class SimpleKalman {
+      constructor({ q = 1e-5, r = 1e-3, p = 1, x = 0 } = {}) {
+        this.q = q; this.r = r; this.p = p; this.x = x; this.k = 0; this.initialized = false;
+      }
+      filter(z) {
+        if (!this.initialized) {
+          this.x = z; this.initialized = true;
+          return z;
+        }
+        // previsão
+        this.p = this.p + this.q;
+        // ganho
+        this.k = this.p / (this.p + this.r);
+        // atualização
+        this.x = this.x + this.k * (z - this.x);
+        this.p = (1 - this.k) * this.p;
+        return this.x;
+      }
+    }
+    const latKF = new SimpleKalman({});
+    const lngKF = new SimpleKalman({});
+
+    function emitLocation(orderId, lat, lng, speed, heading) {
+      const payload = {
+        orderId,
+        lat: Number(lat),
+        lng: Number(lng),
+        speed: isFinite(speed) ? Number(speed) : null,
+        heading: isFinite(heading) ? Number(heading) : null,
+        ts: Date.now()
+      };
+      socket.emit('driver_location', payload);
+    }
+
+    function start() {
+      const orderId = orderIn.value.trim();
+      if (!orderId) { alert('Informe o ID do pedido'); return; }
+      socket.emit('join_room', { orderId });
+
+      if (simTimer) {
+        clearInterval(simTimer); simTimer = null;
+      }
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+
+      if (!('geolocation' in navigator)) {
+        alert('Geolocalização não suportada; use Simular.');
+        return;
+      }
+
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const coords = pos.coords;
+          let lat = coords.latitude;
+          let lng = coords.longitude;
+
+          // Kalman smoothing
+          lat = latKF.filter(lat);
+          lng = lngKF.filter(lng);
+
+          const now = Date.now();
+          let spd = isFinite(coords.speed) ? coords.speed : null;
+          let hdg = null;
+
+          if (last) {
+            const dt = Math.max(1, (now - last.ts) / 1000);
+            const d = haversine(last, { lat, lng });
+            const calcSpeed = d / dt; // m/s
+            if (!isFinite(spd) || spd === null) spd = calcSpeed;
+            hdg = bearing(last, { lat, lng });
+
+            const movedEnough = d >= MIN_MOVE_METERS;
+            const timeEnough = (now - last.ts) >= MAX_INTERVAL_MS;
+            if (movedEnough || timeEnough) {
+              setMarker(lat, lng);
+              map.setView([lat, lng], map.getZoom());
+              emitLocation(orderId, lat, lng, spd, hdg);
+              last = { lat, lng, ts: now };
+            }
+          } else {
+            setMarker(lat, lng);
+            map.setView([lat, lng], 16);
+            emitLocation(orderId, lat, lng, spd, hdg);
+            last = { lat, lng, ts: now };
+          }
+        },
+        (err) => {
+          setStatus('Erro geolocalização: ' + err.message);
+        },
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+      );
+
+      setStatus('Transmitindo posição...');
+    }
+
+    function stop() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (simTimer) {
+        clearInterval(simTimer); simTimer = null;
+      }
+      setStatus('Parado.');
+    }
+
+    function simulate() {
+      const orderId = orderIn.value.trim();
+      if (!orderId) { alert('Informe o ID do pedido'); return; }
+      socket.emit('join_room', { orderId });
+
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (simTimer) clearInterval(simTimer);
+
+      let lat = -23.5505, lng = -46.6333;
+      let step = 0;
+      last = null;
+
+      simTimer = setInterval(() => {
+        // trajetória simples
+        step += 1;
+        lat += 0.00025 * Math.cos(step / 20);
+        lng += 0.00035 * Math.sin(step / 30);
+
+        lat = latKF.filter(lat);
+        lng = lngKF.filter(lng);
+
+        let spd = 8; // m/s ~ 28.8 km/h
+        let hdg = last ? bearing(last, { lat, lng }) : null;
+
+        setMarker(lat, lng);
+        map.setView([lat, lng], 16);
+        emitLocation(orderId, lat, lng, spd, hdg);
+
+        last = { lat, lng, ts: Date.now() };
+        setStatus('Simulando movimento...');
+      }, 1500);
+    }
+
+    btnStart.addEventListener('click', start);
+    btnStop.addEventListener('click', stop);
+    btnSim.addEventListener('click', simulate);
+
+    // Facilitar teste: autopreencher por querystring ?orderId=...
+    (function prefill() {
+      const qs = new URLSearchParams(location.search);
+      const oid = qs.get('orderId');
+      if (oid) {
+        orderIn.value = oid;
+      }
+    })();
+  </script>
+</body>
+</html>
