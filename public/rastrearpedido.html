@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Rastrear Pedido</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0ea5e9" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    body { margin: 0; font-family: system-ui, Arial, sans-serif; color: #0f172a; }
+    header { padding: 12px 16px; background: #0ea5e9; color: #fff; }
+    .panel { padding: 12px 16px; background: #fff; display: grid; gap: 8px; border-bottom: 1px solid #e2e8f0; }
+    input, button { padding: 10px; border-radius: 10px; border: 1px solid #cbd5e1; font-size: 15px; }
+    button { background: #0ea5e9; color: #fff; border: none; cursor: pointer; }
+    #map { height: calc(100vh - 190px); }
+    .row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+    .muted { color: #64748b; font-size: 13px; }
+    .bad { color: #b91c1c; }
+    .good { color: #16a34a; }
+  </style>
+</head>
+<body>
+  <header><h2>Rastrear Pedido</h2></header>
+
+  <div class="panel">
+    <div class="row">
+      <input id="orderId" placeholder="ID do pedido (ex: PED-12345)" />
+      <input id="dest" placeholder="Destino (lat,lng) ou endereço" list="addrList" />
+      <datalist id="addrList"></datalist>
+      <button id="btnJoin">Entrar</button>
+    </div>
+    <div class="row" style="grid-template-columns: 1fr 1fr;">
+      <div id="socketStatus" class="muted">Socket: desconectado</div>
+      <div id="routeInfo" class="muted">ETA: -- | Distância: --</div>
+    </div>
+    <div class="muted" id="lastUpdate">Última atualização: --</div>
+  </div>
+
+  <div id="map"></div>
+
+  <script
+    src="/socket.io/socket.io.js"
+  ></script>
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const orderInput = $('orderId');
+    const destInput = $('dest');
+    const btnJoin = $('btnJoin');
+    const socketStatus = $('socketStatus');
+    const routeInfo = $('routeInfo');
+    const lastUpdate = $('lastUpdate');
+    const addrList = $('addrList');
+
+    let map, driverMarker, destMarker, routeLine;
+    let currentOrderId = '';
+    let destination = null; // {lat, lng}
+    let lastRoute = null; // {coordinates, distance, duration, source}
+    let lastDriver = null; // {lat, lng, ts}
+
+    // Map
+    map = L.map('map', { zoomControl: true }).setView([-23.5505, -46.6333], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    // Socket
+    const socket = io();
+    socket.on('connect', () => {
+      socketStatus.textContent = 'Socket: conectado';
+      socketStatus.className = 'muted good';
+      if (currentOrderId) socket.emit('join_room', { orderId: currentOrderId });
+    });
+    socket.on('disconnect', () => {
+      socketStatus.textContent = 'Socket: desconectado';
+      socketStatus.className = 'muted bad';
+    });
+    socket.on('joined_room', ({ orderId }) => {
+      socketStatus.textContent = `Socket: na sala ${orderId}`;
+      socketStatus.className = 'muted good';
+      // Puxar última posição
+      socket.emit('request_latest_driver', { orderId });
+    });
+    socket.on('latest_driver', ({ orderId, location }) => {
+      if (orderId !== currentOrderId) return;
+      if (location) handleDriverLocation(location);
+    });
+    socket.on('driver_location', (loc) => {
+      if (loc.orderId !== currentOrderId) return;
+      handleDriverLocation(loc);
+    });
+
+    function setMarker(markerRef, latlng, opts = {}) {
+      if (!markerRef) {
+        markerRef = L.marker(latlng, opts).addTo(map);
+      } else {
+        markerRef.setLatLng(latlng);
+      }
+      return markerRef;
+    }
+
+    function fitBoundsToDriverAndDest() {
+      const points = [];
+      if (driverMarker) points.push(driverMarker.getLatLng());
+      if (destMarker) points.push(destMarker.getLatLng());
+      if (points.length >= 2) {
+        const bounds = L.latLngBounds(points);
+        map.fitBounds(bounds, { padding: [40, 40] });
+      }
+    }
+
+    async function geocode(q) {
+      const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&limit=5`);
+      if (!r.ok) throw new Error('Falha no geocoding');
+      return r.json();
+    }
+
+    let debounceTimer;
+    destInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      const q = destInput.value.trim();
+      if (!q || q.match(/^[-]?\d+(\.\d+)?\s*,\s*[-]?\d+(\.\d+)?$/)) {
+        addrList.innerHTML = '';
+        return;
+      }
+      debounceTimer = setTimeout(async () => {
+        try {
+          const results = await geocode(q);
+          addrList.innerHTML = results.map(r => `<option value="${r.display_name}"></option>`).join('');
+        } catch (e) {}
+      }, 300);
+    });
+
+    async function resolveDestination(inputVal) {
+      const val = String(inputVal || '').trim();
+      // lat,lng
+      const m = val.match(/^([-]?\d+(\.\d+)?)\s*,\s*([-]?\d+(\.\d+)?)$/);
+      if (m) {
+        const lat = parseFloat(m[1]); const lng = parseFloat(m[3]);
+        return { lat, lng };
+      }
+      // Endereço -> geocode
+      const gc = await geocode(val);
+      if (!gc.length) throw new Error('Destino não encontrado.');
+      return { lat: gc[0].lat, lng: gc[0].lng };
+    }
+
+    async function fetchRoute(start, end) {
+      const url = `/api/route?start=${start.lat},${start.lng}&end=${end.lat},${end.lng}&profile=driving-car`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('Falha ao buscar rota');
+      return r.json();
+    }
+
+    function maybeRecalculateRoute(driver, force = false) {
+      if (!destination) return;
+      // Recalcula se: nunca calculou; passou 30s; ou distância do driver até a rota > 60m; ou desvio > 80m
+      const now = Date.now();
+      const needsFirst = !lastRoute;
+      const timeExceeded = lastRoute?.ts ? (now - lastRoute.ts > 30000) : false;
+
+      let offRoute = false;
+      if (lastRoute && Array.isArray(lastRoute.coordinates) && lastRoute.coordinates.length >= 2) {
+        const d = distanceToPolyline(driver, lastRoute.coordinates);
+        offRoute = d > 60; // metros
+      }
+
+      if (force || needsFirst || timeExceeded || offRoute) {
+        recalcRoute(driver, destination);
+      }
+    }
+
+    async function recalcRoute(driver, dest) {
+      try {
+        const route = await fetchRoute(driver, dest);
+        route.ts = Date.now();
+        lastRoute = route;
+
+        if (routeLine) routeLine.remove();
+        routeLine = L.polyline(route.coordinates, { color: '#0ea5e9', weight: 5 }).addTo(map);
+
+        const minutes = Math.max(1, Math.round(route.duration / 60));
+        routeInfo.textContent = `ETA: ${minutes} min | Distância: ${(route.distance / 1000).toFixed(1)} km (${route.source})`;
+
+        fitBoundsToDriverAndDest();
+      } catch (e) {
+        routeInfo.textContent = 'Falha ao calcular rota';
+      }
+    }
+
+    function handleDriverLocation(loc) {
+      lastDriver = { lat: loc.lat, lng: loc.lng, ts: loc.ts || Date.now() };
+      driverMarker = setMarker(driverMarker, [lastDriver.lat, lastDriver.lng]);
+      lastUpdate.textContent = `Última atualização: ${new Date(lastDriver.ts).toLocaleTimeString()}`;
+      if (destination) maybeRecalculateRoute(lastDriver, false);
+    }
+
+    // Distância ponto -> polilinha (m)
+    function haversine(a, b) {
+      const R = 6371000;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLng = (b.lng - a.lng) * Math.PI / 180;
+      const lat1 = a.lat * Math.PI / 180;
+      const lat2 = b.lat * Math.PI / 180;
+      const x = Math.sin(dLat / 2) ** 2 + Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+      return 2 * R * Math.asin(Math.sqrt(x));
+    }
+    function distanceToPolyline(p, coords) {
+      let min = Infinity;
+      const P = { lat: p.lat, lng: p.lng };
+      for (let i = 0; i < coords.length - 1; i++) {
+        const A = { lat: coords[i][0], lng: coords[i][1] };
+        const B = { lat: coords[i + 1][0], lng: coords[i + 1][1] };
+        // aproximação: menor de distâncias aos vértices (bom o suficiente p/ decisor de recálculo)
+        const d = Math.min(haversine(P, A), haversine(P, B));
+        if (d < min) min = d;
+      }
+      return min;
+    }
+
+    async function join() {
+      const id = orderInput.value.trim();
+      if (!id) {
+        alert('Informe o ID do pedido.');
+        return;
+      }
+      currentOrderId = id;
+      socket.emit('join_room', { orderId: id });
+
+      // Resolver destino
+      const val = destInput.value.trim();
+      if (val) {
+        try {
+          destination = await resolveDestination(val);
+          destMarker = setMarker(destMarker, [destination.lat, destination.lng]);
+          if (lastDriver) maybeRecalculateRoute(lastDriver, true);
+          fitBoundsToDriverAndDest();
+        } catch (e) {
+          alert(e.message || 'Destino inválido');
+        }
+      } else {
+        // Se há query param dest=lat,lng
+        const urlDest = new URLSearchParams(location.search).get('dest');
+        if (urlDest) {
+          try {
+            const [lat, lng] = urlDest.split(',').map(Number);
+            destination = { lat, lng };
+            destInput.value = `${lat},${lng}`;
+            destMarker = setMarker(destMarker, [destination.lat, destination.lng]);
+            if (lastDriver) maybeRecalculateRoute(lastDriver, true);
+            fitBoundsToDriverAndDest();
+          } catch {}
+        }
+      }
+    }
+
+    btnJoin.addEventListener('click', join);
+
+    // Autopreencher por querystring
+    (function prefill() {
+      const qs = new URLSearchParams(location.search);
+      const oid = qs.get('orderId');
+      const dest = qs.get('dest');
+      if (oid) orderInput.value = oid;
+      if (dest) destInput.value = dest;
+      if (oid) join();
+    })();
+  </script>
+</body>
+</html>
